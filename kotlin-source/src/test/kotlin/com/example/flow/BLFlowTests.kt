@@ -1,13 +1,20 @@
 package com.example.flow
 
 import com.example.model.BL
+import com.example.model.Order
 import com.example.state.BLState
+import com.example.state.OrderState
 import net.corda.core.contracts.TransactionVerificationException
+import net.corda.core.crypto.commonName
 import net.corda.core.getOrThrow
+import net.corda.core.node.services.linearHeadsOfType
+import net.corda.core.node.services.unconsumedStates
 import net.corda.testing.node.MockNetwork
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import java.time.Instant
+import java.util.*
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
@@ -26,6 +33,7 @@ class BLFlowTests {
         c = nodes.partyNodes[2]
         // For real nodes this happens automatically, but we have to manually register the flow for tests
         nodes.partyNodes.forEach { it.registerInitiatedFlow(ExampleFlow.Acceptor::class.java) }
+        nodes.partyNodes.forEach { it.registerInitiatedFlow(CreateOrderFlow.Acceptor::class.java) }
         net.runNetwork()
     }
 
@@ -114,6 +122,50 @@ class BLFlowTests {
         // We check the recorded transaction in both vaults.
         for (node in listOf(a, b)) {
             assertEquals(signedTx, node.services.validatedTransactions.getTransaction(signedTx.id))
+        }
+    }
+
+    /*
+    fun balance(node: MockNetwork.MockNode): Long =
+            node.database.transaction {
+                val states = node.services..unconsumedStates<OrderState>()
+                var balance = 0.0
+                states.forEach { state ->
+                    balance += state.state.data.amount.quantity
+                }
+                balance.toLong() / 100
+            }
+            */
+
+    fun printOrders(node: MockNetwork.MockNode){
+        node.database.transaction {
+            val orders = node.services.vaultService.linearHeadsOfType<OrderState>().values.map { it.state.data }
+            orders.sortedBy { it.date }
+            orders.forEach { println("Seller: ${it.seller.name.commonName}, Buyer: ${it.buyer.name.commonName}, Amount: ${it.order.totalAmount}, Ref: ${it.order.referenceNumber}, Date: ${it.date}") }
+
+        }
+    }
+
+
+    @Test
+    fun `order flow records a transaction in the ledger of seller and buyer`(){
+        val state = OrderState(Order("a01",190.50),
+                a.info.legalIdentity,
+                b.info.legalIdentity,
+                Instant.now()
+                )
+        val flow = CreateOrderFlow.Initiator(state,b.info.legalIdentity)
+        val future = a.services.startFlow(flow).resultFuture
+        net.runNetwork()
+        val signedTx = future.getOrThrow()
+
+        println("======A======")
+        printOrders(a)
+
+        println("======B======")
+        printOrders(b)
+        for (node in listOf(a,b)){
+            assertEquals(signedTx,node.services.validatedTransactions.getTransaction(signedTx.id))
         }
     }
 

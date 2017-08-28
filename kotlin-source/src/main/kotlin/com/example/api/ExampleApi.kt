@@ -1,9 +1,12 @@
 package com.example.api
 
+import com.example.flow.CreateOrderFlow
 import com.example.flow.ExampleFlow
 import com.example.flow.ShippingFlow
 import com.example.model.BL
+import com.example.model.Order
 import com.example.state.BLState
+import com.example.state.OrderState
 import net.corda.client.rpc.notUsed
 import net.corda.core.contracts.StateAndRef
 import net.corda.core.contracts.StateRef
@@ -13,6 +16,7 @@ import net.corda.core.messaging.vaultQueryBy
 import net.corda.core.utilities.loggerFor
 import org.bouncycastle.asn1.x500.X500Name
 import org.slf4j.Logger
+import java.time.Instant
 import javax.ws.rs.*
 import javax.ws.rs.core.MediaType
 import javax.ws.rs.core.Response
@@ -51,6 +55,15 @@ class ExampleApi(val services: CordaRPCOps) {
                 .filter { it != myLegalName && it.toString() != NOTARY_NAME })
     }
 
+
+    @GET
+    @Path("orders")
+    @Produces(MediaType.APPLICATION_JSON)
+    fun getOrders(): List<StateAndRef<OrderState>>{
+        val vaultStates = services.vaultQueryBy<OrderState>()
+        return vaultStates.states
+    }
+
     /**
      * Displays all bl states that exist in the node's vault.
      */
@@ -61,6 +74,47 @@ class ExampleApi(val services: CordaRPCOps) {
         val vaultStates = services.vaultQueryBy<BLState>()
         return vaultStates.states
     }
+
+    @PUT
+    @Path("{seller}/{buyer}/create-order")
+    fun createOrder(order: Order,
+                    @PathParam("seller") seller: X500Name,
+                    @PathParam("buyer") buyer: X500Name) : Response{
+        val seller =services.partyFromX500Name(seller)
+        if (seller == null){
+            return Response.status(Response.Status.BAD_REQUEST).build()
+        }
+
+        val buyer = services.partyFromX500Name(buyer)
+        if (buyer == null){
+            return Response.status(Response.Status.BAD_REQUEST).build()
+        }
+
+        val state = OrderState(
+                order,
+                seller,
+                buyer,
+                date = Instant.now()
+        )
+
+        val (status, msg) = try {
+            val flowHandle = services.
+                    startTrackedFlowDynamic(CreateOrderFlow.Initiator::class.java, state, seller)
+            flowHandle.progress.subscribe { println(">> $it") }
+
+            val result = flowHandle.returnValue.getOrThrow()
+
+            Response.Status.CREATED to "Transaction id ${result.id} committed to ledger."
+
+        } catch (ex: Throwable){
+            logger.error(ex.message, ex)
+            Response.Status.BAD_REQUEST to "Transaction failed."
+        }
+
+        return Response.status(status).entity(msg).build()
+
+    }
+
 
     /**
      * Initiates a flow to agree an bl between two parties.
